@@ -254,10 +254,8 @@ def rotate(x:float,y:float,orig_shape:tuple)->tuple:
     """
     Rotate clockwise 90.
     """
-
     assert len(orig_shape) == 2
     height = orig_shape[0]
-    width = orig_shape[1]
     return (height - y, x)
 
 def rotate_data(data:Tensor, orig_shape:tuple) -> Tensor:
@@ -297,14 +295,18 @@ def cat4results(results:list) -> Results:
     for i in range(1, 4):
         result = results[i]
         result:Results
+
         for key in ret.speed:
             ret.speed[key] += result.speed[key]
 
-        rotate_boxes(result.boxes)
-        for j in range(3 - i):
-            rotate_boxes(result.boxes)
+        boxes = result.boxes
+        boxes:Boxes
+
+        rotate_boxes(boxes)
+        for _ in range(3 - i):
+            rotate_boxes(boxes)
         
-        assert orig_shape == result.boxes.orig_shape
+        assert orig_shape == boxes.orig_shape
         
         ret.boxes = catboxes(ret.boxes.data, result.boxes.data, orig_shape)
 
