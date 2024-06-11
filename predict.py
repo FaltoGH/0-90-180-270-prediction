@@ -1,16 +1,18 @@
 from cv2.typing import MatLike
 import numpy as np
 from torch import Tensor
+import torch
 from ultralytics import YOLO, ASSETS
 from ultralytics.engine.results import Results, Boxes
 import os
 import cv2
 
-class Box:
-    def __init__(self, cls, conf, xywh):
-        self.cls = cls
-        self.conf = conf
-        self.xywh = xywh
+# assets = ASSETS
+assets = r"C:\Users\a\source\repos\yolov8n-playing-card-object-detection\images"
+assets_list = os.listdir(assets)
+
+# model_path = "yolov8n.pt"
+model_path = r"C:\Users\a\source\repos\yolov8n-playing-card-object-detection\yolov8s_playing_cards.pt"
 
 class Rect:
     def __init__(self, x, y, w, h):
@@ -45,8 +47,6 @@ class Rect:
     
     def ratio(self, b):
         return self.intersection(b).area() / self.union(b).area()
-    
-yolo = YOLO()
 
 def getboxarr(boxesarr:list) -> list:
     boxarr = []
@@ -235,8 +235,8 @@ def setroot(boxarr:list, parent:list) -> int:
     for i in range(nbox):
         boxarr[i].root = find(parent, i)
     return 0
-    
-def rotating_predict(yolo:YOLO, im:MatLike) -> Results:
+
+def get4results(yolo:YOLO, im:MatLike) -> list:
     # Predict for four angles respectively.
     results = []
     for i in range(4):
@@ -245,13 +245,85 @@ def rotating_predict(yolo:YOLO, im:MatLike) -> Results:
         if i < 3:
             im = cv2.rotate(im, cv2.ROTATE_90_CLOCKWISE)
     assert len(results) == 4
+    return results
 
+def catboxes(data0:Tensor, data1:Tensor, orig_shape:tuple) -> Boxes:
+    return Boxes(torch.cat((data0, data1)), orig_shape)
+
+def rotate(x:float,y:float,orig_shape:tuple)->tuple:
+    """
+    Rotate clockwise 90.
+    """
+
+    assert len(orig_shape) == 2
+    height = orig_shape[0]
+    width = orig_shape[1]
+    return (height - y, x)
+
+def rotate_data(data:Tensor, orig_shape:tuple) -> Tensor:
+    """
+    Rotate clockwise 90.
+    """
+
+    datac = data.clone()
+    shape = datac.shape
+
+    for i in range(shape[0]):
+        row = datac[i]
+
+        for j in range(0, 3, 2):
+            x = row[j]
+            y = row[j+1]
+            rret = rotate(x, y, orig_shape)
+            row[j] = rret[0]
+            row[j+1] = rret[1]
+    
+    return datac
+
+def rotate_boxes(boxes:Boxes) -> int:
+    boxes.data = rotate_data(boxes.data, boxes.orig_shape)
+    boxes.orig_shape = boxes.orig_shape[::-1]
+    return boxes.orig_shape[1]
+
+def cat4results(results:list) -> Results:
+    assert len(results) == 4
+
+    ret = results[0]
+    ret:Results
+
+    orig_shape = ret.orig_shape
+    orig_shape:tuple
+
+    for i in range(1, 4):
+        result = results[i]
+        result:Results
+        for key in ret.speed:
+            ret.speed[key] += result.speed[key]
+
+        rotate_boxes(result.boxes)
+        for j in range(3 - i):
+            rotate_boxes(result.boxes)
+        
+        assert orig_shape == result.boxes.orig_shape
+        
+        ret.boxes = catboxes(ret.boxes.data, result.boxes.data, orig_shape)
+
+    return ret
+
+def predict4(yolo:YOLO, im:MatLike)->Results:
+    results=get4results(yolo,im)
+    result=cat4results(results)
+    return result
+
+def rotating_predict(yolo:YOLO, im:MatLike) -> Results:
     # Get boxes array.
     boxesarr = [*map(getboxes, results)]
     assert len(boxesarr) == 4
 
     # Get a number of boxes.
     nbox = getnbox(boxesarr)
+    if nbox == 0:
+        return results[0]
 
     # Get box array.
     boxarr = getboxarr(boxesarr)
@@ -276,23 +348,22 @@ def rotating_predict(yolo:YOLO, im:MatLike) -> Results:
     boxarr = [*filter(lambda x:x.best, boxarr)]
 
     ret = results[0]
-    orig_shape = ret.boxes.orig_shape
 
-    print("BESTS=", boxarr)
-
-    # TODO: Convert boxarr into Boxes.
-    # retboxes = Boxes(np.ndarray(boxarr), orig_shape)
-    # ret.boxes = retboxes
-
+    for box in boxarr:
+        # Remove unnecessary custom properties
+        del box.best
+        del box.root
+    
     return ret
 
-assets = os.listdir(ASSETS)
-
-for asset in assets:
-    abspath = os.path.join(ASSETS, asset)
-    im = cv2.imread(abspath)
-
-    result = rotating_predict(yolo, im)
-    print("result=", result)
-    print("result.boxes=", result.boxes)
-    result.show()
+if __name__ == "__main__":
+    yolo = YOLO(model_path)
+    for asset in assets_list:
+        if "pred" in asset: continue
+        abspath = os.path.join(assets, asset)
+        im = cv2.imread(abspath)
+        result = predict4(yolo, im)
+        plot = result.plot()
+        cv2.imshow("plot", plot)
+        cv2.waitKey(0)
+    cv2.destroyAllWindows()
