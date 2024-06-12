@@ -6,6 +6,19 @@ from ultralytics import YOLO, ASSETS
 from ultralytics.engine.results import Results, Boxes
 import os
 import cv2
+import time
+from functools import wraps
+from time import time
+
+def timing(f):
+    @wraps(f)
+    def wrap(*args, **kw):
+        ts = time()
+        result = f(*args, **kw)
+        te = time()
+        print('function %s took %dms.' % (f.__name__, (te-ts)*1000))
+        return result
+    return wrap
 
 # assets = ASSETS
 assets = r"C:\Users\a\source\repos\yolov8n-playing-card-object-detection\images"
@@ -88,19 +101,13 @@ def union(parent:list, x:int, y:int) -> int:
     parent[xp] = yp
     return xp
 
-def makeset(n:int) -> list:
-    return [*range(n)]
-
-def getxywh(box:Boxes) -> Tensor:
-    return box.xywh
-
-def newrect(xywh:Tensor) -> Rect:
-    # xywh.cpu() does not change scope.
-    # use xywh = xywh[0] to substitude device.
-    xywh = xywh[0]
+def newrect(xywh:tuple) -> Rect:
     return Rect(xywh[0], xywh[1], xywh[2], xywh[3])
 
-def getiou(xywh0:Tensor, xywh1:Tensor) -> float:
+def get_xywh(box:Boxes) -> tuple:
+    return tuple(map(float, box.xywh[0]))
+
+def get_xywh_IOU(xywh0:tuple, xywh1:tuple) -> float:
     """
     Returns real number that belongs to interval [0, 1].
     """
@@ -108,37 +115,19 @@ def getiou(xywh0:Tensor, xywh1:Tensor) -> float:
     rect1 = newrect(xywh1)
     intersection = rect0.intersection(rect1).area()
     unionarea = rect0.union(rect1).area()
-    return intersection / unionarea
-
-def getioubetweenboxes(box0:Boxes, box1:Boxes) -> float:
-    """
-    Returns real number that belongs to interval [0, 1].
-    """
-    x = getxywh(box0)
-    y = getxywh(box1)
-    ret = getiou(x, y)
+    ret =  intersection / unionarea
     assert 0 <= ret <= 1
     return ret
 
-def unionboxes(parent:list, boxarr:list) -> int:
+def get_boxes_IOU(box0:Boxes, box1:Boxes) -> float:
     """
-    Returns a number of union operation performed.
+    Returns real number that belongs to interval [0, 1].
     """
-    n:int = len(parent)
-    nunion = 0
-    for i in range(n):
-        for j in range(i+1, n):
-            boxi = boxarr[i]
-            boxi:Boxes
-            boxj = boxarr[j]
-            boxj:Boxes
-
-            iou = getioubetweenboxes(boxi, boxj)
-            if iou > 0.6:
-                union(parent, i, j)
-                nunion += 1
-    
-    return nunion
+    xywh0 = get_xywh(box0)
+    xywh1 = get_xywh(box1)
+    ret = get_xywh_IOU(xywh0, xywh1)
+    assert 0 <= ret <= 1
+    return ret
 
 def getcls(box:Boxes)->int:
     return int(box.cls)
@@ -236,21 +225,40 @@ def setroot(boxarr:list, parent:list) -> int:
         boxarr[i].root = find(parent, i)
     return 0
 
-def get4results(yolo:YOLO, im:MatLike) -> list:
+def get_four_results(yolo:YOLO, im:MatLike) -> list:
+    """
+    Returns four results for each angle, 0, 90, 180, 270,
+    but their image is aligned as 0 clockwise.
+    """
+
     # Predict for four angles respectively.
-    results = []
+    results = [0]*4
+
     for i in range(4):
         result = classic_predict(yolo, im)
-        results.append(result)
+        results[i] = result
+
+        # Do not rotate at last epoch.
         if i < 3:
             im = cv2.rotate(im, cv2.ROTATE_90_CLOCKWISE)
-    assert len(results) == 4
+
+    # Rotate results to make them 0 clockwise.
+    # Do not rotate the first result.
+    for i in range(1, 4):
+        for j in range(4 - i):
+            rotate_result(results[i])
+
     return results
 
-def catboxes(data0:Tensor, data1:Tensor, orig_shape:tuple) -> Boxes:
-    return Boxes(torch.cat((data0, data1)), orig_shape)
+def cat_boxes(boxes0:Boxes, boxes1:Boxes) -> Boxes:
+    """
+    Concatenates two boxes into one boxes and returns it.
+    Two boxes must have the same orig_shape.
+    """
+    assert boxes0.orig_shape == boxes1.orig_shape
+    return Boxes(torch.cat((boxes0.data, boxes1.data)), boxes0.orig_shape)
 
-def rotate(x:float,y:float,orig_shape:tuple)->tuple:
+def rotate_xy(x:float,y:float,orig_shape:tuple)->tuple:
     """
     Rotate 90 clockwise.
     """
@@ -260,10 +268,13 @@ def rotate(x:float,y:float,orig_shape:tuple)->tuple:
     return (h - y, x)
 
 def rotate_row(row:Tensor, orig_shape:tuple) -> int:
+    """
+    Rotate a tensor row.
+    """
     for j in {0,2}:
         x = float(row[j])
         y = float(row[j+1])
-        rret = rotate(x, y, orig_shape)
+        rret = rotate_xy(x, y, orig_shape)
         row[j] = rret[0]
         row[j+1] = rret[1]
     return 0
@@ -279,13 +290,14 @@ def rotate_data(data:Tensor, orig_shape:tuple) -> Tensor:
 
     for i in range(nrow):
         row = ret[i]
-        print("before:", row)
         rotate_row(row, orig_shape)
-        print("after:", row)
 
     return ret
 
 def rotate_boxes(boxes:Boxes) -> Boxes:
+    """
+    Rotate boxes of result.
+    """
     orig_shape = boxes.orig_shape
     data = boxes.data
     data = rotate_data(data, orig_shape)
@@ -293,90 +305,67 @@ def rotate_boxes(boxes:Boxes) -> Boxes:
     ret = Boxes(data, orig_shape)
     return ret
 
-def cat4results(results:list) -> Results:
-    assert len(results) == 4
-
+def merge_results(results:list) -> Results:
+    """
+    Merge multiple results into one.
+    """
     ret = results[0]
     ret:Results
 
-    orig_shape = ret.orig_shape
-    orig_shape:tuple
-
-    for i in range(1, 4):
-        result = results[i]
+    for result in results[1:]:
         result:Results
 
         for key in ret.speed:
             ret.speed[key] += result.speed[key]
 
-        boxes = result.boxes
-        boxes:Boxes
-
-        rotate_boxes(boxes)
-        for _ in range(3 - i):
-            rotate_boxes(boxes)
-        
-        assert orig_shape == boxes.orig_shape
-        
-        ret.boxes = catboxes(ret.boxes.data, result.boxes.data, orig_shape)
+        ret.boxes = cat_boxes(ret.boxes, result.boxes)
 
     return ret
 
-def predict4(yolo:YOLO, im:MatLike)->Results:
-    results=get4results(yolo,im)
-    result=cat4results(results)
-    return result
-
-def rotating_predict(yolo:YOLO, im:MatLike) -> Results:
-    # Get boxes array.
-    boxesarr = [*map(getboxes, results)]
-    assert len(boxesarr) == 4
-
-    # Get a number of boxes.
-    nbox = getnbox(boxesarr)
-    if nbox == 0:
-        return results[0]
-
-    # Get box array.
-    boxarr = getboxarr(boxesarr)
-    assert len(boxarr) == nbox
-    
-    # Union boxes whose iou is greater than 0.6.
-    # Use UNION-FIND algorithm.
-    parent = makeset(nbox)
-    unionboxes(parent, boxarr)
-
-    # First, sort box array by confidence.
-    boxarr.sort(key=getconf)
-
-    # Second, sort box array by root
-    # to make boxes in the same set adjacent.
-    # It is guaranteed that sort method is stable.
-    setroot(boxarr, parent)
-    boxarr.sort(key=lambda x:x.root)
-
-    # Extract only the best boxes
-    setbest(boxarr)
-    boxarr = [*filter(lambda x:x.best, boxarr)]
-
-    ret = results[0]
-
-    for box in boxarr:
-        # Remove unnecessary custom properties
-        del box.best
-        del box.root
-    
+def get_merged_result(yolo:YOLO, im:MatLike) -> Results:
+    results = get_four_results(yolo, im)
+    ret = merge_results(results)
     return ret
+
+@timing
+def union_boxes(boxes:Boxes) -> list:
+    """
+    Union boxes whose IOU is greater than 0.6.
+    Returns parent array.
+    """
+    n = boxes.shape[0]
+    parent = [*range(n)]
+
+    for i in range(n-1):
+        for j in range(i+1, n):
+
+            boxi = boxes[i]
+            boxi:Boxes
+
+            boxj = boxes[j]
+            boxj:Boxes
+
+            iou = get_boxes_IOU(boxi, boxj)
+            if iou > 0.6:
+                union(parent, i, j)
+
+    return parent
 
 def rotate_orig_shape(orig_shape:tuple) -> tuple:
+    """
+    Returns rotated shape.
+    """
     return orig_shape[::-1]
 
 def rotate_orig_img(orig_img:MatLike) -> MatLike:
+    """
+    Returns rotated img.
+    """
     return cv2.rotate(orig_img, cv2.ROTATE_90_CLOCKWISE)
 
 def rotate_result(result:Results) -> int:
     """
-    Rotate the result 90 clockwise.
+    Rotate the result 90 clockwise inplace.
     """
     result.orig_shape = rotate_orig_shape(result.orig_shape)
     result.orig_img = rotate_orig_img(result.orig_img)
@@ -384,6 +373,10 @@ def rotate_result(result:Results) -> int:
     return 0
 
 def show_result(result:Results) -> int:
+    """
+    Show result. If the user press q key, return 1.
+    Otherwise, return 0.
+    """
     plot = result.plot()
     plot:np.ndarray
 
@@ -393,25 +386,29 @@ def show_result(result:Results) -> int:
     
     cv2.imshow("plot", plot)
     key = cv2.waitKey(0) & 0xFF
+
     if key == ord("q"):
         return 1
+    
     return 0
 
 if __name__ == "__main__":
+    print("main start")
+
     torch.set_printoptions(sci_mode=False)
     yolo = YOLO(model_path)
     for asset in assets_list:
+
         if "pred" in asset: continue
+
         abspath = os.path.join(assets, asset)
         im = cv2.imread(abspath)
-        results = yolo(im)
-        result = results[0]
-        result:Results
 
-        if show_result(result) != 0:
-            break
+        
+        result = get_merged_result(yolo, im)
 
-        rotate_result(result)
+        parent = union_boxes(result.boxes)
+        print(parent)
 
         if show_result(result) != 0:
             break
