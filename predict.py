@@ -8,15 +8,16 @@ import os
 import cv2
 import time
 from functools import wraps
-from time import time
 
 def timing(f):
     @wraps(f)
     def wrap(*args, **kw):
-        ts = time()
+        ts = time.time()
         result = f(*args, **kw)
-        te = time()
-        print('function %s took %dms.' % (f.__name__, (te-ts)*1000))
+        te = time.time()
+        ms = (te-ts)*1000
+        name = f.__name__
+        print('function %s took %dms.' % (name, ms))
         return result
     return wrap
 
@@ -178,18 +179,38 @@ def argmax(d:dict) -> int:
     assert ret != -1
     return ret
 
-def setbest(boxarr:list) -> int:
+@timing
+def extract_best(parent:list, boxes:Boxes) -> Boxes:
     """
-    Returns the number of best boxes.
+    Returns the best boxes.
     """
+
     # Use two pointer algorithm to do work on the boxes in the same set
     begin = 0
     end = 0
-    nbox = len(boxarr)
-    nbest = 0
+    n = boxes.shape[0]
 
-    while end < nbox:
-        while end + 1 < nbox and boxarr[end].root == boxarr[end + 1].root:
+    if n < 2:
+        return boxes
+    
+    assert len(parent) == n
+
+    for i in range(n):
+        parent[i] = find(parent, i)
+
+    boxarr = [*boxes]
+    for i in range(n):
+        boxarr[i].parent = parent[i]
+
+
+    boxarr.sort(key = lambda x:x.conf, reverse = True)
+
+    # The sort is in-place (i.e. the list itself is modified) and stable (i.e. the order of two equal elements is maintained).
+    boxarr.sort(key = lambda x:x.parent)
+
+    while begin < n and end < n:
+
+        while end + 1 < n and boxarr[end].parent == boxarr[end + 1].parent:
             end += 1
         
         # begin=Beginning inclusive index of the same set
@@ -199,7 +220,6 @@ def setbest(boxarr:list) -> int:
         # x is a number of boxes for that class
         # y is sum of confidence.
         d = dict()
-
 
         for i in range(begin, end+1):
             box = boxarr[i]
@@ -219,7 +239,6 @@ def setbest(boxarr:list) -> int:
             cls = getcls(box)
             if bestcls == cls:
                 box.best = True
-                nbest += 1
 
                 # Only one box can be the best box,
                 # which has the greatest confidence.
@@ -234,13 +253,25 @@ def setbest(boxarr:list) -> int:
         begin = end + 1
         end = end + 1
     
-    return nbest
+    ret = None
 
-def setroot(boxarr:list, parent:list) -> int:
-    nbox = len(boxarr)
-    for i in range(nbox):
-        boxarr[i].root = find(parent, i)
-    return 0
+    for box in boxarr:
+        
+        if ret == None and box.best:
+            ret = box
+
+            del box.best
+            del box.parent
+
+            continue
+
+        if box.best:
+            del box.best
+            del box.parent
+
+            ret = cat_boxes(ret, box)
+    
+    return ret
 
 def get_four_results(yolo:YOLO, im:MatLike) -> list:
     """
@@ -284,17 +315,24 @@ def rotate_xy(x:float,y:float,orig_shape:tuple)->tuple:
     h = orig_shape[0]
     return (h - y, x)
 
-def rotate_row(row:Tensor, orig_shape:tuple) -> int:
+def rotate_row(row:Tensor, orig_shape:tuple) -> None:
     """
     Rotate a tensor row.
     """
+
     for j in {0,2}:
         x = float(row[j])
         y = float(row[j+1])
         rret = rotate_xy(x, y, orig_shape)
         row[j] = rret[0]
         row[j+1] = rret[1]
-    return 0
+    
+    a,b,c,d = float(row[2]), float(row[1]), float(row[0]), float(row[3])
+    row[0] = a
+    row[1] = b
+    row[2] = c
+    row[3] = d
+
 
 def rotate_data(data:Tensor, orig_shape:tuple) -> Tensor:
     """
@@ -348,7 +386,7 @@ def get_merged_result(yolo:YOLO, im:MatLike) -> Results:
 @timing
 def union_boxes(boxes:Boxes) -> list:
     """
-    Union boxes whose IOU is greater than 0.5.
+    Union boxes whose IOU is greater than 0.4.
     Returns parent array.
     """
     n = boxes.shape[0]
@@ -362,8 +400,11 @@ def union_boxes(boxes:Boxes) -> list:
             xywh1 = xywhs[j]
 
             iou = get_xywh_IOU(xywh0, xywh1)
-            if iou > 0.6:
+            if iou > 0.4:
                 union(parent, i, j)
+    
+    for i in range(n):
+        parent[i] = find(parent, i)
 
     return parent
 
@@ -412,23 +453,26 @@ if __name__ == "__main__":
     print("main start")
 
     torch.set_printoptions(sci_mode=False)
-    print("set_printoptions")
+    print("set_printoptions done")
 
     yolo = YOLO(model_path)
-    print("initialize YOLO")
+    print("initialize YOLO done")
 
     for asset in assets_list:
 
         if "pred" in asset: continue
 
         abspath = os.path.join(assets, asset)
+        
         im = cv2.imread(abspath)
-        print("cv2.imread")
+        print("cv2.imread done")
         
         result = get_merged_result(yolo, im)
 
         parent = union_boxes(result.boxes)
-        print(parent)
+        print("parent=",parent)
+
+        result.boxes = extract_best(parent, result.boxes)
 
         if show_result(result) != 0:
             break
