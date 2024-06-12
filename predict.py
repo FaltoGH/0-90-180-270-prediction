@@ -252,36 +252,46 @@ def catboxes(data0:Tensor, data1:Tensor, orig_shape:tuple) -> Boxes:
 
 def rotate(x:float,y:float,orig_shape:tuple)->tuple:
     """
-    Rotate clockwise 90.
+    Rotate 90 clockwise.
     """
+    
     assert len(orig_shape) == 2
-    height = orig_shape[0]
-    return (height - y, x)
+    h = orig_shape[0]
+    return (h - y, x)
+
+def rotate_row(row:Tensor, orig_shape:tuple) -> int:
+    for j in {0,2}:
+        x = float(row[j])
+        y = float(row[j+1])
+        rret = rotate(x, y, orig_shape)
+        row[j] = rret[0]
+        row[j+1] = rret[1]
+    return 0
 
 def rotate_data(data:Tensor, orig_shape:tuple) -> Tensor:
     """
-    Rotate clockwise 90.
+    Rotate data 90 clockwise.
     """
 
-    datac = data.clone()
-    shape = datac.shape
+    ret = data.clone()
+    shape = ret.shape
+    nrow = shape[0]
 
-    for i in range(shape[0]):
-        row = datac[i]
+    for i in range(nrow):
+        row = ret[i]
+        print("before:", row)
+        rotate_row(row, orig_shape)
+        print("after:", row)
 
-        for j in range(0, 3, 2):
-            x = row[j]
-            y = row[j+1]
-            rret = rotate(x, y, orig_shape)
-            row[j] = rret[0]
-            row[j+1] = rret[1]
-    
-    return datac
+    return ret
 
-def rotate_boxes(boxes:Boxes) -> int:
-    boxes.data = rotate_data(boxes.data, boxes.orig_shape)
-    boxes.orig_shape = boxes.orig_shape[::-1]
-    return boxes.orig_shape[1]
+def rotate_boxes(boxes:Boxes) -> Boxes:
+    orig_shape = boxes.orig_shape
+    data = boxes.data
+    data = rotate_data(data, orig_shape)
+    orig_shape = orig_shape[::-1]
+    ret = Boxes(data, orig_shape)
+    return ret
 
 def cat4results(results:list) -> Results:
     assert len(results) == 4
@@ -358,10 +368,37 @@ def rotating_predict(yolo:YOLO, im:MatLike) -> Results:
     
     return ret
 
-def rotater(result:Results):
-    result.orig_shape = result.orig_shape[::-1]
+def rotate_orig_shape(orig_shape:tuple) -> tuple:
+    return orig_shape[::-1]
+
+def rotate_orig_img(orig_img:MatLike) -> MatLike:
+    return cv2.rotate(orig_img, cv2.ROTATE_90_CLOCKWISE)
+
+def rotate_result(result:Results) -> int:
+    """
+    Rotate the result 90 clockwise.
+    """
+    result.orig_shape = rotate_orig_shape(result.orig_shape)
+    result.orig_img = rotate_orig_img(result.orig_img)
+    result.boxes = rotate_boxes(result.boxes)
+    return 0
+
+def show_result(result:Results) -> int:
+    plot = result.plot()
+    plot:np.ndarray
+
+    # Resize plot if it is too big to display
+    while plot.shape[0] > 1000 or plot.shape[1] > 1900:
+        plot = cv2.resize(plot, (plot.shape[1]//2, plot.shape[0]//2))
+    
+    cv2.imshow("plot", plot)
+    key = cv2.waitKey(0) & 0xFF
+    if key == ord("q"):
+        return 1
+    return 0
 
 if __name__ == "__main__":
+    torch.set_printoptions(sci_mode=False)
     yolo = YOLO(model_path)
     for asset in assets_list:
         if "pred" in asset: continue
@@ -370,12 +407,13 @@ if __name__ == "__main__":
         results = yolo(im)
         result = results[0]
         result:Results
-        plot = result.plot()
-        plot:np.ndarray
-        while plot.shape[0] > 1000 or plot.shape[1] > 1900:
-            plot = cv2.resize(plot, (plot.shape[1]//2, plot.shape[0]//2))
-        cv2.imshow("plot", plot)
-        key = cv2.waitKey(0) & 0xFF
-        if key == ord("q"):
+
+        if show_result(result) != 0:
             break
+
+        rotate_result(result)
+
+        if show_result(result) != 0:
+            break
+        
     cv2.destroyAllWindows()
