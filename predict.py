@@ -27,67 +27,16 @@ assets_list = os.listdir(assets)
 # model_path = "yolov8n.pt"
 model_path = r"C:\Users\a\source\repos\yolov8n-playing-card-object-detection\yolov8s_playing_cards.pt"
 
-class Rect:
-    def __init__(self, x, y, w, h):
-        self.x = x
-        self.y = y
-        self.w = w
-        self.h = h
-    
-    def bottom(self):
-        return self.y + self.h
-    
-    def right(self):
-        return self.x + self.w
-    
-    def area(self):
-        return self.w * self.h
-
-    def union(self, b):
-        posX = min(self.x, b.x)
-        posY = min(self.y, b.y)
-        
-        return Rect(posX, posY, max(self.right(), b.right()) - posX, max(self.bottom(), b.bottom()) - posY)
-    
-    def intersection(self, b):
-        posX = max(self.x, b.x)
-        posY = max(self.y, b.y)
-        
-        candidate = Rect(posX, posY, min(self.right(), b.right()) - posX, min(self.bottom(), b.bottom()) - posY)
-        if candidate.w > 0 and candidate.h > 0:
-            return candidate
-        return Rect(0, 0, 0, 0)
-    
-    def ratio(self, b):
-        return self.intersection(b).area() / self.union(b).area()
-
-def getboxarr(boxesarr:list) -> list:
-    boxarr = []
-    for boxes in boxesarr:
-        for box in boxes:
-            boxarr.append(box)
-    return boxarr
-
-def getnbox(boxesarr:list) -> int:
-    nbox = 0
-    for boxes in boxesarr:
-        n = len(boxes)
-        nbox += n
-    return nbox
-
-def getboxes(result:Results) -> Boxes:
-    return result.boxes
-
 def classic_predict(yolo:YOLO, im:MatLike) -> Results:
     results = yolo(im)
     assert len(results) == 1
     result = results[0]
     return result
 
-
-
-# Implement UNION-FIND algorithm.
 def find(parent:list, x:int) -> int:
+    """
+    Find root node index of the tree.
+    """
     if parent[x] == x:
         return x
     
@@ -96,37 +45,105 @@ def find(parent:list, x:int) -> int:
     return ret
 
 def union(parent:list, x:int, y:int) -> int:
+    """
+    Union two nodes.
+    """
     xp = find(parent, x)
     yp = find(parent, y)
-    parent[xp] = yp
+    if yp < xp:
+        parent[xp] = yp
+    else:
+        parent[yp] = xp
+    
     return xp
 
-def newrect(xywh:tuple) -> Rect:
-    return Rect(xywh[0], xywh[1], xywh[2], xywh[3])
+def get_intersection_length(a:float,b:float,c:float,d:float)->float:
+    if a > b:
+        b, a = a, b
+    
+    if c > d:
+        d, c = c, d
+    
+    if a > c:
+        a, b, c, d = c, d, a, b
+    
+    if a != 0:
+        a, b, c, d = 0, b-a, c-a, d-a
 
-def get_xywh(box:Boxes) -> tuple:
-    return tuple(map(float, box.xywh[0]))
+    # a == 0
+
+    if c == 0:
+        ret = min(b, d)
+
+    elif b <= c:
+        ret = 0
+    
+    elif d <= b:
+        ret = d - c
+    
+    else:
+        ret = max(0, b - c)
+    
+    assert ret >= 0
+
+    return ret
+
+def get_intersection_area2(x0:float,y0:float,w0:float,h0:float,x1:float,y1:float,w1:float,h1:float) -> float:
+
+    if w0 < 0:
+        raise AssertionError("w0=%f"%w0)
+    
+    if h0 < 0:
+        raise AssertionError("h0=%f"%h0)
+    
+    if w1 < 0:
+        raise AssertionError("w1=%f"%w1)
+    
+    if h1 < 0:
+        raise AssertionError("h1=%f"%h1)
+
+    xl = get_intersection_length(x0,x0+w0,x1,x1+w1)
+    yl = get_intersection_length(y0,y0+h0,y1,y1+h1)
+
+    return xl * yl
+
+def get_intersection_area(xywh0:tuple, xywh1:tuple) -> float:
+    return get_intersection_area2(xywh0[0], xywh0[1], xywh0[2], xywh0[3], xywh1[0], xywh1[1], xywh1[2], xywh1[3])
+
+
+def get_xywh(box:Boxes) -> list:
+    ret = [*map(float, box.xywh[0])]
+    
+    assert len(ret) == 4
+
+    if ret[2] < 0:
+        ret[0] = ret[0] + ret[2]
+        ret[2] = -ret[2]
+    
+    if ret[3] < 0:
+        ret[1] = ret[1] + ret[3]
+        ret[3] = -ret[3]
+
+    for i in ret:
+        assert i >= 0
+
+    return ret
 
 def get_xywh_IOU(xywh0:tuple, xywh1:tuple) -> float:
     """
     Returns real number that belongs to interval [0, 1].
     """
-    rect0 = newrect(xywh0)
-    rect1 = newrect(xywh1)
-    intersection = rect0.intersection(rect1).area()
-    unionarea = rect0.union(rect1).area()
-    ret =  intersection / unionarea
-    assert 0 <= ret <= 1
-    return ret
+    ia = get_intersection_area(xywh0, xywh1)
+    ua = xywh0[2] * xywh0[3] + xywh1[2] * xywh1[3] - ia
 
-def get_boxes_IOU(box0:Boxes, box1:Boxes) -> float:
-    """
-    Returns real number that belongs to interval [0, 1].
-    """
-    xywh0 = get_xywh(box0)
-    xywh1 = get_xywh(box1)
-    ret = get_xywh_IOU(xywh0, xywh1)
-    assert 0 <= ret <= 1
+    if ua == 0:
+        return 0
+
+    ret =  ia / ua
+
+    if ret < 0 or ret > 1:
+        raise AssertionError("ret=%f"%ret)
+
     return ret
 
 def getcls(box:Boxes)->int:
@@ -322,6 +339,7 @@ def merge_results(results:list) -> Results:
 
     return ret
 
+@timing
 def get_merged_result(yolo:YOLO, im:MatLike) -> Results:
     results = get_four_results(yolo, im)
     ret = merge_results(results)
@@ -330,22 +348,20 @@ def get_merged_result(yolo:YOLO, im:MatLike) -> Results:
 @timing
 def union_boxes(boxes:Boxes) -> list:
     """
-    Union boxes whose IOU is greater than 0.6.
+    Union boxes whose IOU is greater than 0.5.
     Returns parent array.
     """
     n = boxes.shape[0]
     parent = [*range(n)]
+    xywhs = tuple(map(get_xywh, boxes))
 
     for i in range(n-1):
         for j in range(i+1, n):
 
-            boxi = boxes[i]
-            boxi:Boxes
+            xywh0 = xywhs[i]
+            xywh1 = xywhs[j]
 
-            boxj = boxes[j]
-            boxj:Boxes
-
-            iou = get_boxes_IOU(boxi, boxj)
+            iou = get_xywh_IOU(xywh0, xywh1)
             if iou > 0.6:
                 union(parent, i, j)
 
@@ -396,14 +412,18 @@ if __name__ == "__main__":
     print("main start")
 
     torch.set_printoptions(sci_mode=False)
+    print("set_printoptions")
+
     yolo = YOLO(model_path)
+    print("initialize YOLO")
+
     for asset in assets_list:
 
         if "pred" in asset: continue
 
         abspath = os.path.join(assets, asset)
         im = cv2.imread(abspath)
-
+        print("cv2.imread")
         
         result = get_merged_result(yolo, im)
 
