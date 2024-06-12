@@ -358,14 +358,24 @@ def rotating_predict(yolo:YOLO, im:MatLike) -> Results:
     
     return ret
 
+def rotater(result:Results):
+    result.orig_shape = result.orig_shape[::-1]
+
 if __name__ == "__main__":
     yolo = YOLO(model_path)
     for asset in assets_list:
         if "pred" in asset: continue
         abspath = os.path.join(assets, asset)
         im = cv2.imread(abspath)
-        result = predict4(yolo, im)
+        results = yolo(im)
+        result = results[0]
+        result:Results
         plot = result.plot()
+        plot:np.ndarray
+        while plot.shape[0] > 1000 or plot.shape[1] > 1900:
+            plot = cv2.resize(plot, (plot.shape[1]//2, plot.shape[0]//2))
         cv2.imshow("plot", plot)
-        cv2.waitKey(0)
+        key = cv2.waitKey(0) & 0xFF
+        if key == ord("q"):
+            break
     cv2.destroyAllWindows()
